@@ -1,0 +1,27 @@
+{-
+
+  TASK 1 - Greatest common divisor
+  Write the method that calculates greater common divisor for two integers greater
+  or equal to 1 and less than 1048576.
+-}
+
+() recv_internal() impure {
+    ;; do nothing for internal messages
+}
+
+;; testable
+(int) gcd(int a, int b) method_id {
+    ;; Assert that the numbers are in range.
+    throw_unless(50, ((a >= 1) & (a < 1048576)) & ((b >= 1) & (b < 1048576)));
+
+    ;; Select the bigger number as x and the other one as y.
+    var (x, y) = (a >=  b) ? (a, b) : (b, a);
+
+    ;; Use Euclidean Algorithm to find the Greatest Common Divisor of the two numbers.
+    while (x % y > 0) {
+        var r = x % y;
+        x = y;
+        y = r;
+    } 
+    return y;
+}
