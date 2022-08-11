@@ -1,0 +1,47 @@
+{-
+
+  TASK 2 - Merge hashmaps (dictionaries)
+  Write the method that merges two hashmaps into one. When keys of hashmaps
+  interesect - values from first hashmap should be used, while discarded
+  key/value pairs should be stored into separate hashmap.
+  Method should return two hashmaps (merged_dict, discared_dict). If any
+  of resulting hashmaps is empty it should be represented by `null` value.
+  Hashmap key length is 256 bit. Each hashmap has at most 256 elements.
+-}
+
+() recv_internal() impure {
+}
+
+
+;; testable
+(cell, cell) merge_hashmaps(cell dict1, cell dict2) method_id {
+    
+    var (k1, k2) = (0,  0);
+    var merged_dict = new_dict();
+    var discarded_dict = new_dict();
+
+    int key_len = 256;
+
+    ;; Add all elements in first dictionary.
+    var (k1, e1, succ1) = udict_get_next?(dict1, key_len, k1);
+    while (succ1) {
+      _ = merged_dict~udict_add?(key_len, k1, e1);
+      (k1, e1, succ1) = udict_get_next?(dict1, key_len, k1);
+    }
+
+    ;; Try to add all elements in second dictionary, however, add the elements which has already been added from
+    ;; first dictionary to discarded dictionary.
+    var (k2, e2, succ2) = udict_get_next?(dict2, key_len, k2);
+    while (succ2) {
+      var added = merged_dict~udict_add?(key_len, k2, e2);
+
+      ;; If the key-value pair is already exists, keep te value from dict1 and add the value from dict2 to discarded set.
+      if (added == false) {
+        discarded_dict~udict_add?(key_len, k2, e2);
+      }
+
+      (k2, e2, succ2) = udict_get_next?(dict2, key_len, k2);
+    }
+
+    return (merged_dict, discarded_dict);
+}

@@ -1,0 +1,527 @@
+{-
+
+  TASK 3 - Message validation.
+  Write the method that checks that cell contains valid message
+  in accordance to https://github.com/ton-blockchain/ton/blob/master/crypto/block/block.tlb#L155
+  Note, tests will only cover valid and invalid MessageAny objects,
+  valid MessageRelaxed (which are not simultaneously MessageAny) will not be presented
+  If message is invalid for any reason - method should return (0, null), otherwise
+  it should return (-1, [slice src, slice dest, int amount] ), where src, dest and
+  amount represents source of the message, destination of the message and attached
+  amount of TONs. If any of those values are not presented (or presented as
+  addr_none slice) in the message cell - they should be substituted with null.
+  It is guaranteed that for all tests any HashmapE datatype in message structure
+  is empty hashmaps (has hme_empty constructor).
+  Documentation on TL-B schemes can be found in https://ton.org/docs/#/overviews/TL-B
+-}
+
+() recv_internal() {
+}
+
+(slice, int, slice, slice, int) validate_common_msg_info(slice cs);
+(slice, int, slice, slice, int) validate_internal_info(slice cs);
+(slice, int, slice, slice, int) validate_external_in_info(slice cs);
+(slice, int, slice, slice, int) validate_external_out_info(slice cs);
+(slice, int) validate_init(slice cs);
+(slice, int) validate_body(slice cs);
+(slice, int, slice) read_msg_addr_int(slice cs);
+(slice, int, slice) read_msg_addr_ext(slice cs);
+(slice, int, slice) read_extarnal_msg_addr(slice cs);
+(slice, int, slice) read_std_internal_msg_addr(slice cs);
+(slice, int, slice) read_var_internal_msg_addr(slice cs);
+(slice, int, int, int) read_any_cast_info(slice cs);
+(slice, int, int) read_grams(slice cs);
+(slice, int, int) read_bits(slice cs, int len);
+(slice, int) ignore_bits(slice cs, int len);
+
+;; testable
+(int, tuple) validate_message(cell message) method_id {
+
+    slice cs = message.begin_parse();
+
+    (cs, int valid, slice src, slice dst, int amount) = cs.validate_common_msg_info();
+    if (valid == 0) {
+        return (0, null());
+    }
+
+    (cs, valid) = cs.validate_init();
+    if (valid == 0) {
+        return (0, null());
+    }
+
+    (cs, valid) = cs.validate_body();
+    if (valid == 0) {
+        return (0, null());
+    }
+
+    return (-1, unsafe_tuple([src, dst, amount]));
+}
+
+(slice, int, slice, slice, int) validate_common_msg_info(slice cs) {
+    ;; int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool
+    ;;      src:MsgAddressInt dest:MsgAddressInt 
+    ;;      value:CurrencyCollection ihr_fee:Grams fwd_fee:Grams
+    ;;      created_lt:uint64 created_at:uint32 = CommonMsgInfo;
+    ;; ext_in_msg_info$10 src:MsgAddressExt dest:MsgAddressInt 
+    ;;      import_fee:Grams = CommonMsgInfo;
+    ;; ext_out_msg_info$11 src:MsgAddressInt dest:MsgAddressExt
+    ;;      created_lt:uint64 created_at:uint32 = CommonMsgInfo;
+    
+    if (cs.slice_bits() < 1) {
+        return (cs, 0, null(), null(), 0);
+    }
+    var int_ext = cs~load_uint(1);
+
+    if (int_ext == 0) {
+        ;; Internal message
+        (cs, int valid, slice src, slice dst, int amount) = cs.validate_internal_info();
+        return (cs, valid, src, dst, amount);
+    } else {
+        ;; External message
+        if (cs.slice_bits() < 1) {
+            return (cs, 0, null(), null(), 0);
+        }
+        var in_out = cs~load_uint(1);
+
+        if (in_out == 0) {
+            (cs, int valid, slice src, slice dst, int amount) = cs.validate_external_in_info();
+            return (cs, valid, src, dst, amount);
+        } else {
+            (cs, int valid, slice src, slice dst, int amount) = cs.validate_external_out_info();
+            return (cs, valid, src, dst, amount);
+        }
+    }
+}
+
+(slice, int, slice, slice, int) validate_internal_info(slice cs) {
+    ;; Internal message
+    ;;
+    ;; int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool
+    ;; src:MsgAddressInt dest:MsgAddressInt 
+    ;; value:CurrencyCollection ihr_fee:Grams fwd_fee:Grams
+    ;; created_lt:uint64 created_at:uint32 = CommonMsgInfo;
+
+    if (cs.slice_bits() <  3) {
+        return (cs, 0, null(),  null(), 0);
+    }
+    var ihr_disabled = cs~load_uint(1);
+    var bounce = cs~load_uint(1);
+    var bounced = cs~load_uint(1);
+
+    var (cs, valid, src) = cs.read_msg_addr_int();
+    if (valid == 0) {
+        return (cs, 0, null(), null(), 0);
+    }
+
+    var (cs, valid, dst) = cs.read_msg_addr_int();
+    if (valid == 0) {
+        return (cs, 0, null(), null(), 0);
+    }
+
+    var (cs, valid, value) = cs.read_grams();
+    if (valid == 0)  {
+        return (cs, 0, null(), null(), 0);
+    }
+    var extra = cs~load_dict();    ;; The tests assumes that theree is no extra currency.
+
+    var (cs, valid, ihr_fee) = cs.read_grams();
+    if (valid == 0)  {
+        return (cs, 0, null(), null(), 0);
+    }
+    var (cs, valid, fwd_fee) = cs.read_grams();
+    if (valid == 0)  {
+        return (cs, 0, null(), null(), 0);
+    }
+
+    if (cs.slice_bits() < (32 + 64)) {
+        return (cs, 0, null(), null(), 0);
+    }
+    var logical_time = cs~load_uint(64);
+    var created_time = cs~load_uint(32);
+
+    if (valid) {
+        return (cs, -1, src, dst, value);
+    } else {
+        return (cs, 0, null(), null(), 0);
+    }
+}
+
+(slice, int, slice, slice, int) validate_external_in_info(slice cs) {
+    ;; external in bound message.
+    ;;
+    ;; ext_in_msg_info$10 src:MsgAddressExt dest:MsgAddressInt 
+    ;;     import_fee:Grams = CommonMsgInfo;
+    var (cs, valid, src) = cs.read_msg_addr_ext();
+    if (valid == 0) {
+        return (cs, 0, null(), null(), 0);
+    }
+
+    var (cs, alid, dst) = cs.read_msg_addr_int();
+    if (valid == 0) {
+        return (cs, 0, null(), null(), 0);
+    }
+
+    var (cs, valid, amount) = cs.read_grams();
+    if (valid == 0) {
+        return (cs, 0, null(), null(), 0);
+    }
+
+    return (cs, -1, src, dst, amount);
+}
+
+(slice, int, slice, slice, int) validate_external_out_info(slice cs) {
+    ;; external out bound message
+    ;;
+    ;; ext_out_msg_info$11 src:MsgAddressInt dest:MsgAddressExt
+    ;;     created_lt:uint64 created_at:uint32 = CommonMsgInfo;
+
+    var (cs, valid, src) = cs.read_msg_addr_int();
+    if (valid == 0) {
+        return (cs, 0, null(), null(), 0);
+    }
+
+    var (cs, valiid, dst) = cs.read_msg_addr_ext();
+    if (valid == 0) {
+        return (cs, 0, null(), null(), 0);
+    }
+
+    var logical_time = cs~load_uint(64);
+    var created_time = cs~load_uint(32);
+
+    return (cs, -1, src, dst, null());
+}
+
+(slice, int, slice) read_msg_addr_int(slice cs) {
+    ;; anycast_info$_ depth:(#<= 30) { depth >= 1 }
+    ;;    rewrite_pfx:(bits depth) = Anycast;
+    ;; addr_std$10 anycast:(Maybe Anycast) 
+    ;;    workchain_id:int8 address:bits256  = MsgAddressInt;
+    ;; addr_var$11 anycast:(Maybe Anycast) addr_len:(## 9) 
+    ;;    workchain_id:int32 address:(bits addr_len) = MsgAddressInt;
+    ;; _ _:MsgAddressInt = MsgAddress;
+
+    if (cs.slice_bits() < 2) {
+        return (cs, 0, null());
+    }
+
+    int addr_type = cs~load_uint(2);
+
+    if (addr_type == 2) {
+        (cs, int valid, slice addr) = cs.read_std_internal_msg_addr();
+        return (cs, valid, addr);
+    }
+
+    if (addr_type == 3) {
+        (cs, int valid, slice addr) = cs.read_var_internal_msg_addr();
+        return (cs, valid, addr);
+    }
+
+    return (cs, 0, null());
+}
+
+(slice, int, slice) read_msg_addr_ext(slice cs) {
+    ;; addr_none$00 = MsgAddressExt;
+    ;; addr_extern$01 len:(## 9) external_address:(bits len) 
+    ;;              = MsgAddressExt;
+    ;; _ _:MsgAddressExt = MsgAddress;
+
+    if (cs.slice_bits() < 2) {
+        return (cs, 0, null());
+    }
+
+    int addr_type = cs~load_uint(2);
+
+    if (addr_type == 0) {
+        return (cs, -1, null());   ;; Valid but empty address
+    }
+
+    if (addr_type == 1) {
+        (cs, var valid, slice addr) = cs.read_extarnal_msg_addr();
+        return (cs, valid, addr);
+    }
+
+    return (cs, 0, null());
+}
+
+(slice, int, slice) read_extarnal_msg_addr(slice cs) {
+    ;; addr_extern$01 len:(## 9) external_address:(bits len) 
+    ;;              = MsgAddressExt;
+
+    if (cs.slice_bits() < 9)  {
+        return (cs, 0, null());
+    }
+
+    var len = cs~load_uint(9);
+    if (cs.slice_bits() < len) {
+        return (cs, 0, null());
+    }
+    var ext_addr = cs~load_uint(len);
+
+    var addr = begin_cell()
+        .store_uint(1, 2)           ;; 01 = external
+        .store_uint(len, 9)         ;; len
+        .store_uint(ext_addr, len)  ;; external address
+        .end_cell();
+
+    return (cs, -1, addr.begin_parse());
+}
+
+(slice, int, slice) read_std_internal_msg_addr(slice cs) {
+    ;; anycast_info$_ depth:(#<= 30) { depth >= 1 }
+    ;;    rewrite_pfx:(bits depth) = Anycast;
+    ;; addr_std$10 anycast:(Maybe Anycast) 
+    ;;    workchain_id:int8 address:bits256  = MsgAddressInt;
+
+    int valid = -1;
+    int info_len = 0;
+    int info_bits = 0;
+
+    if (cs.slice_bits() < 1)  {
+        return (cs, 0, null());
+    }
+    int maybe = cs~load_uint(1);
+    if (maybe == 1) {
+        (cs, valid, info_len, info_bits) = cs.read_any_cast_info();
+    }
+    if (valid == 0) {
+        return (cs, 0, null());
+    }
+
+    if (cs.slice_bits() < (8 + 256)) {
+        return (cs, 0, null());
+    }
+    var workchain = cs~load_int(8);
+    var addr_bits = cs~load_uint(256);
+
+    var bldr = begin_cell()
+        .store_uint(2, 2)           ;; 02 = standard internal
+        .store_uint(maybe, 1);
+    
+    if (maybe == 1) {
+        bldr~store_uint(info_len, 5);
+        if (info_len >= 1) {
+            bldr~store_uint(info_bits, info_len);
+        }
+    }
+
+    bldr.store_int(workchain, 8)     ;; workchain
+        .store_uint(addr_bits, 256); ;; address bits
+
+    cell addr = bldr.end_cell();
+
+    return (cs, -1, addr.begin_parse());
+}
+
+(slice, int, slice) read_var_internal_msg_addr(slice cs) {
+    ;; anycast_info$_ depth:(#<= 30) { depth >= 1 }
+    ;;    rewrite_pfx:(bits depth) = Anycast;
+    ;; addr_var$11 anycast:(Maybe Anycast) addr_len:(## 9) 
+    ;;    workchain_id:int32 address:(bits addr_len) = MsgAddressInt;
+
+    int valid = -1;
+    int info_len = 0;
+    int info_bits = 0;
+
+    if (cs.slice_bits() < 1)  {
+        return (cs, 0, null());
+    }
+    int maybe = cs~load_uint(1);
+    if (maybe == 1) {
+        (cs, valid, info_len, info_bits) = cs.read_any_cast_info();
+    }
+    if (valid == 0) {
+        return (cs, 0, null());
+    }
+
+    if (cs.slice_bits() < 9) {
+        return (cs, 0, null());
+    }
+    var addr_len = cs~load_int(9);
+    if (cs.slice_bits() < (32 + addr_len)) {
+        return (cs, 0, null());
+    }
+
+    var workchain = cs~load_int(32);
+    var addr_bits = cs~load_uint(addr_len);
+
+    var bldr = begin_cell()
+        .store_uint(3, 2)           ;; 03 = variable internal
+        .store_uint(maybe, 1);
+    
+    if (maybe == 1) {
+        bldr~store_uint(info_len, 5);
+        if (info_len >= 1) {
+            bldr~store_uint(info_bits, info_len);
+        }
+    }
+
+    bldr.store_int(addr_len, 9)             ;; addreess length
+        .store_int(workchain, 32)           ;; workchain
+        .store_uint(addr_bits, addr_len);   ;; address bits
+
+    cell addr = bldr.end_cell();
+
+    return (cs, -1, addr.begin_parse());
+}
+
+(slice, int, int, int) read_any_cast_info(slice cs) {
+    ;; anycast_info$_ depth:(#<= 30) { depth >= 1 }
+    ;;    rewrite_pfx:(bits depth) = Anycast;
+
+    if (cs.slice_bits() < 5)  {
+        return (cs, 0, 0, 0);
+    }
+
+    int dept = cs~load_uint(5);
+    if (dept > 30) {
+        return (cs, 0, 0, 0);
+    }
+
+    if (cs.slice_bits() < dept)  {
+        return (cs, 0, 0, 0);
+    }
+
+    int pfx = null();
+    if (dept >= 1) {
+        pfx = cs~load_uint(dept);
+    }
+
+    return (cs, -1, dept, pfx);
+}
+
+(slice, int, int) read_grams(slice cs) {
+    ;; var_uint$_ {n:#} len:(#< n) value:(uint (len * 8))
+    ;;          = VarUInteger n;
+    ;; nanograms$_ amount:(VarUInteger 16) = Grams;  
+
+    if (cs.slice_bits() < 4)  {
+        return (cs, 0, 0);
+    }
+
+    int len = cs~load_uint(4);
+
+    if (cs.slice_bits() < (len * 8))  {
+        return (cs, 0, 0);
+    }
+
+    int value = cs~load_uint(len * 8);
+    
+    return (cs, -1, value);
+}
+
+(slice, int) validate_init(slice cs) {
+
+    ;; tick_tock$_ tick:Bool tock:Bool = TickTock;
+    ;;
+    ;; _ split_depth:(Maybe (## 5)) special:(Maybe TickTock)
+    ;;     code:(Maybe ^Cell) data:(Maybe ^Cell)
+    ;;     library:(HashmapE 256 SimpleLib) = StateInit;
+  
+    ;; message$_ {X:Type} info:CommonMsgInfo
+    ;;     init:(Maybe (Either StateInit ^StateInit))
+    ;;     body:(Either X ^X) = Message X;
+
+    (cs, int valid, int bits) = cs.read_bits(1);     ;; init:(MAYBE
+    if (valid == 0)  {
+        return (cs, 0);
+    }
+
+    if (bits == 1) {
+        (cs, valid, bits) = cs.read_bits(1);        ;; init:(Maybe EITHER
+        if (valid == 0)  {
+            return (cs, 0);
+        }
+
+
+        if (bits == 0) {
+            (cs, valid, bits) = cs.read_bits(1);    ;; split_depth:(MAYBE
+            if (valid == 0)  {
+                return (cs, 0);
+            }
+
+            if (bits == 1) {
+                (cs, valid) = cs.ignore_bits(5);    ;; split_dept: ## 5
+            }
+            if (valid == 0)  {
+                return (cs, 0);
+            }
+
+            (cs, valid, bits) = cs.read_bits(1);    ;; special:(Maybe
+            if (valid == 0)  {
+                return (cs, 0);
+            }
+
+            if (bits == 1) {
+                (cs, valid) = cs.ignore_bits(2);    ;; special: tick-tock
+            }
+            if (valid == 0)  {
+                return (cs, 0);
+            }
+
+            (cs, valid, bits) = cs.read_bits(1);    ;; code:(Maybe
+            if (valid == 0)  {
+                return (cs, 0);
+            }
+
+            if (bits == 1) {
+                _ = cs~load_ref();
+            }
+
+            (cs, valid, bits) = cs.read_bits(1);    ;; data:(Maybe
+            if (valid == 0)  {
+                return (cs, 0);
+            }
+
+            if (bits == 1) {
+                _ = cs~load_ref();
+            }
+
+            (cs, valid, bits) = cs.read_bits(1);    ;; Empty library
+            if (valid == 0)  {
+                return (cs, 0);
+            }
+
+            if (bits != 0) {                        ;; The hashmap is empty in tests
+                return (cs, 0);
+            }
+
+            return (cs, -1);
+
+        } else {
+            _ = cs~load_ref();
+            return (cs, -1);
+        }
+    }
+
+    return (cs, -1);
+}
+
+(slice, int) validate_body(slice cs) {
+    (cs, int valid, int bits) = cs.read_bits(1);
+    if (valid == 0) {
+        return (cs, 0);
+    }
+
+    if (bits == 0) {
+        ;;  do nothing
+    } else {
+        cs~load_ref();
+    }
+
+    return (cs, -1);
+}
+
+(slice, int, int) read_bits(slice cs, int len) {
+    if (cs.slice_bits() < len)  {
+        return (cs, 0, 0);
+    }
+    return (cs, -1, cs~load_uint(len));
+}
+
+(slice, int) ignore_bits(slice cs, int len) {
+    if (cs.slice_bits() < len)  {
+        return (cs, 0);
+    }
+    cs~skip_bits(len);
+    return (cs, -1);
+}
